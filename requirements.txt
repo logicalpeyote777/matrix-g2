@@ -1,0 +1,7 @@
+# Bridge (matrix_bridge.py) — Python 3.10+
+matrix-nio[e2e]==0.25.2   # client Matrix + E2EE (tira dentro python-olm)
+websockets==15.0.1        # server WebSocket verso l'app occhiali
+numpy==1.26.4             # VAD (RMS) + conversione PCM
+aiohttp==3.13.3           # chiamate REST per SSSS / key backup
+faster-whisper==1.2.1     # STT locale (transcribe della dettatura vocale)
+cryptography==46.0.5      # AES-CTR per la decryption dei secret SSSS

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Matrix G2</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --accent: #1f6feb; --accent-h: #388bfd;
+      --text: #e6edf3; --dim: #8b949e;
+      --err: #f85149; --green: #3fb950;
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased; }
+
+    .screen { display: flex; flex-direction: column; min-height: 100dvh; padding: 0 20px 40px; }
+    .hidden { display: none !important; }
+
+    /* brand */
+    .brand { text-align: center; padding: 36px 0 24px; }
+    .brand-icon { width: 60px; height: 60px;
+      background: linear-gradient(135deg, var(--accent) 0%, #7c3aed 100%);
+      border-radius: 16px; display: inline-flex; align-items: center;
+      justify-content: center; font-size: 30px; margin-bottom: 12px; }
+    .brand h1 { font-size: 24px; font-weight: 700; letter-spacing: -.5px; }
+    .brand p  { color: var(--dim); font-size: 13px; margin-top: 4px; }
+
+    /* card */
+    .card { background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 20px; margin-bottom: 14px; }
+    .card-title { font-size: 11px; font-weight: 600; letter-spacing: 1px;
+      text-transform: uppercase; color: var(--dim); margin-bottom: 16px; }
+
+    /* fields */
+    .field { margin-bottom: 12px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label { display: block; font-size: 12px; font-weight: 500;
+      color: var(--dim); margin-bottom: 6px; }
+    .field input { width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 9px; padding: 12px 14px; font-size: 15px; color: var(--text);
+      outline: none; transition: border-color .15s, box-shadow .15s; }
+    .field input:focus { border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(31,111,235,.15); }
+    .field input::placeholder { color: var(--dim); opacity: .45; }
+
+    /* buttons */
+    .btn-primary { display: block; width: 100%; padding: 14px;
+      background: var(--accent); color: #fff; border: none; border-radius: 10px;
+      font-size: 16px; font-weight: 600; cursor: pointer;
+      transition: background .15s, opacity .15s; margin-bottom: 10px; }
+    .btn-primary:hover { background: var(--accent-h); }
+    .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+
+    .btn-ghost { display: block; width: 100%; padding: 12px;
+      background: transparent; border: 1px solid var(--border); border-radius: 10px;
+      font-size: 14px; color: var(--dim); cursor: pointer;
+      transition: border-color .15s, color .15s; }
+    .btn-ghost:hover { border-color: var(--dim); color: var(--text); }
+
+    .btn-outline { background: transparent; border: 1px solid var(--border);
+      color: var(--dim); font-size: 13px; padding: 9px 24px; border-radius: 8px;
+      cursor: pointer; margin-top: 8px; transition: border-color .15s, color .15s; }
+    .btn-outline:hover { border-color: var(--err); color: var(--err); }
+
+    /* error */
+    .err-msg { font-size: 13px; color: var(--err); min-height: 18px;
+      padding: 4px 0; text-align: center; }
+
+    /* seckey hint */
+    .hint { background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px; margin-bottom: 14px;
+      font-size: 13px; color: var(--dim); line-height: 1.5; }
+    .hint strong { color: var(--text); }
+
+    /* connected */
+    #connected { align-items: center; justify-content: center; text-align: center; gap: 14px; }
+    .conn-icon { width: 76px; height: 76px;
+      background: linear-gradient(135deg, #0d2d1a 0%, #0d1f30 100%);
+      border: 2px solid var(--green); border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 36px; margin-bottom: 6px; }
+    .conn-status { font-size: 18px; font-weight: 700; color: var(--green); }
+    .conn-user { font-family: 'SF Mono','Fira Code',monospace; font-size: 13px;
+      color: var(--dim); background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 5px 14px; }
+    .conn-hints { margin-top: 6px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px 18px; width: 100%; max-width: 300px; }
+    .conn-hints table { width: 100%; border-collapse: collapse; }
+    .conn-hints td { padding: 4px 0; font-size: 13px; }
+    .conn-hints td:first-child { color: var(--dim); width: 100px; font-size: 12px; }
+  </style>
+</head>
+<body>
+
+<!-- ── 1. Login ── -->
+<div id="login" class="screen">
+  <div class="brand">
+    <div class="brand-icon">⬡</div>
+    <h1>Matrix G2</h1>
+    <p>glasses HUD client</p>
+  </div>
+  <div class="card">
+    <div class="card-title">Accedi</div>
+    <div class="field">
+      <label>Server</label>
+      <input type="url" id="homeserver" placeholder="https://matrix.org" autocomplete="off" inputmode="url"/>
+    </div>
+    <div class="field">
+      <label>Username</label>
+      <input type="text" id="username" placeholder="kevin" autocomplete="off"/>
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="password" autocomplete="current-password"/>
+    </div>
+  </div>
+  <button class="btn-primary" id="login-btn">Accedi →</button>
+  <div class="err-msg hidden" id="login-err"></div>
+</div>
+
+<!-- ── 2. Security key ── -->
+<div id="seckey" class="screen hidden">
+  <div class="brand">
+    <div class="brand-icon">🔑</div>
+    <h1>Security Key</h1>
+    <p>Verifica E2EE</p>
+  </div>
+  <div class="hint">
+    <strong>Facoltativa.</strong> Inserisci la tua Security Key Matrix per abilitare
+    la decryption dei messaggi cifrati precedenti.
+    Puoi saltare e aggiungerla in seguito dal logout → login.
+  </div>
+  <div class="card">
+    <div class="card-title">Recovery Key</div>
+    <div class="field">
+      <input type="text" id="security-key"
+        placeholder="AbCd EfGh IjKl MnOp QrSt UvWx YzAb CdEf"
+        autocomplete="off" autocorrect="off" spellcheck="false"/>
+    </div>
+  </div>
+  <button class="btn-primary" id="verify-btn">Verifica e continua →</button>
+  <button class="btn-ghost" id="skip-btn">Salta per ora</button>
+</div>
+
+<!-- ── 3. Connected ── -->
+<div id="connected" class="screen hidden">
+  <div class="conn-icon">⬡</div>
+  <div class="conn-status">Connesso</div>
+  <div class="conn-user" id="conn-user"></div>
+  <div id="verify-status" style="font-size:13px;color:var(--dim);min-height:18px"></div>
+  <div class="conn-hints">
+    <table>
+      <tr><td>Tap</td><td>Rispondi a voce</td></tr>
+      <tr><td>Swipe su/giù</td><td>Cambia stanza</td></tr>
+      <tr><td>Double-tap</td><td>Pagina successiva</td></tr>
+    </table>
+  </div>
+  <button class="btn-outline" id="logout-btn">Logout</button>
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

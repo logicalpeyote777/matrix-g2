@@ -1,0 +1,24 @@
+# --- secrets & sessione (MAI committare) ---
+matrix_creds.json
+*.creds.json
+.env
+.env.*
+!.env.example
+
+# --- store E2EE / backup locali ---
+nio_store/
+matrix_store/
+matrix_store_*/
+backup_store_*/
+*.db
+.backup_*
+
+# --- build & deps ---
+node_modules/
+dist/
+*.ehpk
+__pycache__/
+*.pyc
+
+# --- runtime ---
+*.log

@@ -1,0 +1,29 @@
+# systemd unit per il bridge Matrix G2.
+# Installa:  sudo cp deploy/eveng2-matrix.service /etc/systemd/system/
+#            sudo systemctl daemon-reload
+#            sudo systemctl enable --now eveng2-matrix
+# Adatta User, WorkingDirectory e i path sotto alla tua installazione.
+[Unit]
+Description=Matrix G2 bridge — client Matrix per gli occhiali Even G2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/opt/matrix-g2
+# -u = output unbuffered (i log finiscono subito in journalctl)
+ExecStart=/usr/bin/python3 -u /opt/matrix-g2/matrix_bridge.py
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+# Path di stato (default: accanto a matrix_bridge.py). Scommenta per spostarli:
+# Environment=BRIDGE_CREDS_FILE=/var/lib/matrix-g2/matrix_creds.json
+# Environment=BRIDGE_STORE_PATH=/var/lib/matrix-g2/nio_store
+# Modello whisper per la STT (base/small/medium/large-v3): più grande = più preciso
+# ma più lento su CPU. Default: medium (bilanciato). large-v3 per più precisione (~4s a caldo),
+# small/base su macchine deboli.
+# Environment=BRIDGE_WHISPER_MODEL=medium
+
+[Install]
+WantedBy=multi-user.target
