@@ -3,12 +3,15 @@
 
 HUD state machine:
   ROOMS   → swipe=cursore · tap=apri · 2x=HUD off       (resa: session picker TM)
-  CHAT    → swipe=scorri msg · tap=avvia mic · 2x=torna lista
+  CHAT    → swipe=scorri msg · tap=avvia mic · 2x=torna lista · 3x=HUD off
+            (niente triple-tap nell'SDK: 3 tap arrivano come 2x+tap → sintetizzato
+             col tap in ROOMS entro TRIPLE_WIN dal 2x partito dalla chat)
   REC     → tap=stop → PROC   (chat visibile + live caption del parziale STT in basso,
                                status in riga 9; parziali ogni ~2.5s, skip-if-busy)
   PROC    → whisper trascrive → CONFIRM   (status in riga 9 + fx="dots" animato dall'app)
   CONFIRM → swipe=scorri testo · tap=invia · 2x=scarta  (testo full-width nel frame)
-  OFF     → tap=torna ROOMS
+  OFF     → 2x=riaccende dov'eri (CHAT se spento da lì, sennò ROOMS); altri gesti
+            ignorati, così i tap accidentali non svegliano l'HUD
 
 WS protocol
   App→Bridge: PCM bytes | {"t":"login",...} | {"t":"logout"} | {"t":"gesture","g":"..."}
@@ -44,6 +47,7 @@ REC_MAX_SEC = 120.0   # tetto di sicurezza: stop registrazione (start/stop è a 
 LIVE_WIN_SEC  = 2.5   # live caption: finestra minima tra due trascrizioni parziali
 LIVE_TAIL_SEC = 20.0  # live caption: trascrive solo la coda (sul totale >30s è lento)
 SCROLL_DEB  = 0.35   # seconds between scroll events
+TRIPLE_WIN  = 0.45   # tap dopo un 2x-dalla-chat entro questa finestra = triple tap
 _BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 CREDS_FILE  = os.environ.get("BRIDGE_CREDS_FILE", os.path.join(_BASE_DIR, "matrix_creds.json"))
 STORE_PATH  = os.environ.get("BRIDGE_STORE_PATH", os.path.join(_BASE_DIR, "nio_store"))
@@ -83,6 +87,8 @@ _clients:         set   = set()
 _whisper_model    = None
 _logging_in:      bool  = False
 _confirm_t:       float = 0.0    # quando siamo entrati in CONFIRM (gate anti tap accodati)
+_last_dbl_t:      float = 0.0    # quando l'ultimo 2x è uscito dalla CHAT (per il triple)
+_off_from_chat:   bool  = False  # OFF arrivato col triple dalla chat → 2x riapre la chat
 _new_in_cur:      bool  = False  # ultimo _ingest ha portato un msg nuovo nella chat aperta
 
 
@@ -864,14 +870,23 @@ async def _finish_audio():
 async def _on_gesture(g: str):
     global _state, _current_room_id, _room_scroll, _msg_scroll, _pending_text
     global _capturing, _pcm, _confirm_scroll, _last_scroll_t, _live_text, _live_gen
+    global _last_dbl_t, _off_from_chat
 
     order = _sorted_rooms(); n = len(order)
 
     if _state == S.OFF:
-        _state = S.ROOMS; _push_hud()   # qualsiasi gesto riaccende l'HUD
+        if g != "double_tap": return    # solo 2x riaccende (no wake accidentali)
+        rs = _cur()
+        if _off_from_chat and rs:       # spento dalla chat → riapri la chat
+            rs.unread = 0
+            _msg_scroll = max(0, len(_chat_lines(rs)) - H)
+            _state = S.CHAT; _push_hud(fx="type")
+        else:
+            _state = S.ROOMS; _push_hud()
 
     elif _state == S.ROOMS:
         if g == "double_tap":
+            _off_from_chat = False
             _state = S.OFF; _push_hud()
         elif g in ("swipe_down", "swipe_up"):
             now = time.monotonic()
@@ -887,6 +902,10 @@ async def _on_gesture(g: str):
             _current_room_id = order[new_idx] if order else ""
             _push_hud()
         elif g == "tap":
+            if time.monotonic() - _last_dbl_t < TRIPLE_WIN:
+                # terzo tap del triple partito in CHAT → HUD off, 2x riapre la chat
+                _off_from_chat = True
+                _state = S.OFF; _push_hud(); return
             rs = _cur()
             if rs:
                 rs.unread = 0
@@ -898,6 +917,7 @@ async def _on_gesture(g: str):
 
     elif _state == S.CHAT:
         if g == "double_tap":
+            _last_dbl_t = time.monotonic()   # un tap entro TRIPLE_WIN = triple → OFF
             _state = S.ROOMS; _msg_scroll = 0; _push_hud()
         elif g in ("swipe_up", "swipe_down"):
             now = time.monotonic()
