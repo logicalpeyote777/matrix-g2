@@ -53,9 +53,10 @@ npx evenhub qr --url http://<tuo-ip>:5173
 | tap | apri la chat selezionata | avvia la dettatura (mic) |
 | double-tap | spegni l'HUD | torna alla lista |
 
-**Dettatura**: **tap** per iniziare a registrare, **tap** di nuovo per fermare →
-l'HUD mostra "trascrivo…", poi appare il testo trascritto. Da lì: **swipe** per
-scorrere il testo, **1 tap** per inviare, **2 tap** per scartare.
+**Dettatura**: **tap** per iniziare a registrare, **tap** di nuovo per fermare.
+Mentre parli l'HUD mostra la **live caption** del parziale trascritto; allo stop
+compare "Transcribing..." (pallini animati), poi il testo appare in un **dialog
+Send/Cancel**: **swipe** per scorrere, **1 tap** invia, **2 tap** scarta.
 
 ## File
 

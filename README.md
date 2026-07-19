@@ -152,15 +152,20 @@ storia via `/messages`), dettatura vocale → invio, E2EE. Da tenere presente:
 - Lo **stato dell'HUD è condiviso** tra i client WebSocket connessi: due client
   insieme si "pestano" la navigazione. Uso normale = un client, nessun problema.
 - La **dettatura** si avvia e si ferma **a tap** (tap in chat = start, tap di nuovo
-  = stop). Dopo la trascrizione: swipe per scorrere il testo, 1 tap invia, 2 tap
-  scarta. C'è solo un tetto di sicurezza sulla durata (`REC_MAX_SEC`, 120s).
+  = stop). Mentre registri l'HUD mostra una **live caption** del parziale trascritto
+  (finestra sulla coda degli ultimi ~20s, aggiornata ogni ~2.5s, saltata se whisper
+  è occupato). Allo stop parte la trascrizione finale, poi il testo appare in un
+  **dialog Send/Cancel**: swipe per scorrere, 1 tap invia, 2 tap scarta. C'è solo
+  un tetto di sicurezza sulla durata (`REC_MAX_SEC`, 120s).
 - La **qualità STT** dipende dal modello whisper (`BRIDGE_WHISPER_MODEL`, default
   `medium`): su CPU `medium` è un buon compromesso; `large-v3` è più preciso ma
   più lento. Il modello viene scaricato al primo uso.
-- L'**HUD** ha un look "terminale" (barre ASCII sopra/sotto, autoscroll a fondo
-  chat, effetto typewriter). Le dimensioni (`W`/`H` nel bridge, `COLS`/`ROWS`
-  nell'app) sono tarate per l'area visibile del G2: se il bordo si taglia sul tuo
-  device, riducile in coppia.
+- L'**HUD** ricalca lo stile del **Terminal Mode** dei G2: lista chat come session
+  picker (selezione a box), messaggi con prefissi (`/` tuoi, `?` unread, `>`
+  cursore), status line in basso con hint tra parentesi quadre, animazione a
+  pallini durante la trascrizione e dialog Send/Cancel per la conferma. Le
+  dimensioni (`W`/`H` nel bridge, `COLS`/`ROWS` nell'app) sono tarate per l'area
+  visibile del G2: se il bordo si taglia sul tuo device, riducile in coppia.
 - Alcune stanze senza nome esplicito possono restare "Empty Room" finché i membri
   non vengono risolti.
 

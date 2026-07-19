@@ -22,37 +22,67 @@ let autoT: ReturnType<typeof setTimeout> | null = null
 let pendingLogin: { homeserver: string, user: string, password: string } | null = null
 let recording            = false
 
-// ── HUD hacker: geometria + barre ASCII (solo sopra/sotto, niente bordi laterali) ─
-// Frame ASCII: i box-drawing Unicode (═║╔) sul G2 renderizzano più larghi del testo.
-// 44 col = larghezza che il G2 non manda a capo. Se serve, taralo in coppia con W.
-// Dimensione che il G2 mostra correttamente. NB: il font NON è ridimensionabile via
-// SDK — rimpicciolire il container non rimpicciolisce il testo, lo taglia soltanto.
+// ── HUD: container unico 44×9, chrome stile Terminal Mode ────────────────────
+// righe 1-7 = contenuto (lines dal bridge), riga 8 = separatore "-"×44,
+// riga 9 = status line: title (sx) + footer (dx, right-aligned a col 44).
+// NB: il font è FISSO dal firmware — rimpicciolire il container CLIPPA il testo.
 const HUD_W = 576, HUD_H = 288, BORDER = 3   // container occhiali (px)
-const COLS = 44, ROWS = 9                    // barre e altezza (caratteri)
-const IW = COLS, IH = ROWS - 2               // contenuto: piena larghezza, deve = W/H nel bridge
-const HUD_TITLE = 'MATRIX//G2'
+const COLS = 44, ROWS = 9                    // griglia caratteri
+const IW = COLS, IH = ROWS - 2               // contenuto: 7 righe full-width
 
-function bar(label: string): string {
-  const inner = COLS - 2
-  let seg = label ? `=[ ${label} ]` : ''
-  if (seg.length > inner) seg = seg.slice(0, inner)
-  seg += '='.repeat(Math.max(0, inner - seg.length))
-  return '+' + seg + '+'
+const SEP = '-'.repeat(COLS)
+
+type Dialog = { text: string[], opts: string[] }
+
+// stato dell'ultimo frame (serve al redraw locale dell'animazione dots)
+let curTitle  = ''
+let curLines: string[] = []
+let curFooter = ''
+let curDialog: Dialog | null = null
+
+// riga 9: title + spazi + footer right-aligned; se non ci sta, tronca title secco
+function statusLine(title: string, footer: string): string {
+  let t = title
+  const max = COLS - footer.length - (footer ? 1 : 0)
+  if (t.length > max) t = t.slice(0, Math.max(0, max))
+  return t + ' '.repeat(Math.max(0, COLS - t.length - footer.length)) + footer
 }
 
-// barra sopra (title) + contenuto a piena larghezza + barra sotto (footer).
-// Ricostruito a ogni frame → le barre restano integre anche a metà typewriter.
-function renderFrame(title: string, lines: string[], footer: string): string {
-  const rows: string[] = []
-  for (let i = 0; i < IH; i++) {
-    let c = lines[i] ?? ''
-    if (c.length > IW) c = c.slice(0, IW)
-    rows.push(c.padEnd(IW))
+function clip(s: string): string {
+  return (s.length > IW ? s.slice(0, IW) : s).padEnd(IW)
+}
+
+// CONFIRM: box dialog ASCII sulle righe 2-8 (7 righe), disegnato dall'app
+function dialogRows(d: Dialog): string[] {
+  const hb    = '+' + '-'.repeat(42) + '+'
+  const isep  = '|' + '-'.repeat(42) + '|'
+  const inner = (s: string) => '| ' + s.slice(0, 40).padEnd(40) + ' |'
+  const text  = d.text ?? []
+  const opts  = d.opts ?? ['Send', 'Cancel']
+  return [
+    hb,
+    inner('.|. ' + (text[0] ?? '')),
+    inner('    ' + (text[1] ?? '')),
+    isep,
+    inner('> ' + (opts[0] ?? '')),
+    inner('  ' + (opts[1] ?? '')),
+    hb,
+  ]
+}
+
+// frame completo 9×44: contenuto (o riga contesto + box dialog) + separatore + status
+function renderFrame(title: string, lines: string[], footer: string, dlg: Dialog | null): string {
+  if (dlg) {
+    // dialog: riga 1 contesto + box righe 2-8 + status riga 9 = 9 righe esatte.
+    // NIENTE SEP qui: aggiungerlo fa 10 righe e la status line viene clippata.
+    return [clip(lines[0] ?? ''), ...dialogRows(dlg), statusLine(title, footer)].join('\n')
   }
-  return [bar(title), ...rows, bar(footer)].join('\n')
+  const rows: string[] = []
+  for (let i = 0; i < IH; i++) rows.push(clip(lines[i] ?? ''))
+  return [...rows, SEP, statusLine(title, footer)].join('\n')
 }
 
-let hudText = renderFrame(HUD_TITLE, ['', '  > boot…'], 'INIT')
+let hudText = renderFrame('- Link', ['  boot...'], '', null)
 let hudTimer: ReturnType<typeof setInterval> | null = null
 
 function pushContainer(text: string) {
@@ -74,12 +104,42 @@ function pushContainer(text: string) {
 
 function stopType() { if (hudTimer) { clearInterval(hudTimer); hudTimer = null } }
 
-// fx==='type' → svela il contenuto a scaglioni (stile terminale), sempre dentro
-// il frame; a scatti fissi (6) per non intasare il BLE. Altrimenti render istantaneo.
-function setHudStructured(title: string, lines: string[], footer: string, fx?: string) {
+// ── animazione dots (fx="dots"): redraw LOCALE della sola riga 9 ─────────────
+// Il bridge manda UN frame con title=".   Label..."; l'app cicla lo slot prefisso
+// (4 char, col 1-4): ".   " → "..  " → "... ". 500ms (vincolo >= 400ms), si ferma
+// al primo payload successivo senza fx dots, a WS close, o dopo 60s (safety cap).
+const DOT_FRAMES = ['.   ', '..  ', '... ']
+let dotsTimer: ReturnType<typeof setInterval> | null = null
+let dotsPhase = 0
+let dotsStart = 0
+
+function stopDots() { if (dotsTimer) { clearInterval(dotsTimer); dotsTimer = null } }
+
+function startDots() {
+  stopDots()
+  dotsPhase = 0
+  dotsStart = Date.now()
+  dotsTimer = setInterval(() => {
+    if (Date.now() - dotsStart > 60000) { stopDots(); return }   // safety cap
+    dotsPhase = (dotsPhase + 1) % DOT_FRAMES.length
+    const animTitle = DOT_FRAMES[dotsPhase] + curTitle.slice(4)
+    pushContainer(renderFrame(animTitle, curLines, curFooter, curDialog))
+  }, 500)
+}
+
+// fx==='type' → svela il contenuto a scaglioni dentro il frame, 4 step/60ms.
+// fx==='dots' → frame subito + animazione locale riga 9. Altrimenti render secco.
+function setHudStructured(title: string, lines: string[], footer: string, fx?: string, dlg?: Dialog | null) {
   stopType()
-  if (!title && lines.length === 0 && !footer) { pushContainer(''); return }   // HUD off
-  if (fx !== 'type') { pushContainer(renderFrame(title, lines, footer)); return }
+  stopDots()
+  curTitle = title; curLines = lines; curFooter = footer; curDialog = dlg ?? null
+  if (!title && !footer && lines.every(l => !l) && !curDialog) { pushContainer(''); return }   // HUD off
+  if (fx === 'dots') {
+    pushContainer(renderFrame(title, lines, footer, curDialog))
+    startDots()
+    return
+  }
+  if (fx !== 'type') { pushContainer(renderFrame(title, lines, footer, curDialog)); return }
   const total = lines.reduce((a, l) => a + l.length, 0) || 1
   const steps = 4   // pochi passi: meno write BLE → meno gesti persi durante l'anim
   let s = 0
@@ -93,7 +153,7 @@ function setHudStructured(title: string, lines: string[], footer: string, fx?: s
       const take = Math.min(l.length, budget - used)
       partial.push(l.slice(0, take)); used += take
     }
-    pushContainer(renderFrame(title, partial, footer))
+    pushContainer(renderFrame(title, partial, footer, curDialog))
     if (s >= steps) stopType()
   }
   tick()
@@ -129,7 +189,6 @@ async function setupHud() {
     pushContainer(hudText)
 
     // Gesti fisici occhiali → bridge WS
-    // ponytail: no containerID filter — tap/double_tap may arrive with id≠1 or via sysEvent
     bridge.onEvenHubEvent((ev: any) => {
       // PCM del mic (mentre registriamo) → stream binario al bridge
       const pcm = ev?.audioEvent?.audioPcm
@@ -185,18 +244,18 @@ function normalizeHS(raw: string): string {
 function resetSeckeyBtns() {
   const vb = el<HTMLButtonElement>('verify-btn'), sb = el<HTMLButtonElement>('skip-btn')
   vb.disabled = sb.disabled = false
-  vb.textContent = 'Verifica e continua →'
+  vb.textContent = 'Verifica e continua'
 }
 
 // ── bridge WebSocket ──────────────────────────────────────────────────────────
 
 function handleWsMsg(m: any) {
   if (m.t === 'hud') {
-    // payload strutturato {title,lines,footer,fx}; fallback su text per compat
-    const title  = m.title ?? HUD_TITLE
+    // payload {title,lines,footer,fx,dialog}; fallback su text per compat
+    const title  = m.title ?? ''
     const lines  = m.lines ?? (m.text ? String(m.text).split('\n') : [])
     const footer = m.footer ?? ''
-    setHudStructured(title, lines, footer, m.fx)
+    setHudStructured(title, lines, footer, m.fx, m.dialog ?? null)
   } else if (m.t === 'login_ok') {
     if (autoT) { clearTimeout(autoT); autoT = null }
     pendingLogin = null
@@ -223,14 +282,14 @@ function handleWsMsg(m: any) {
       evenBridge?.audioControl(false).catch(() => {})
     }
   } else if (m.t === 'verify_ok') {
-    el('verify-status').textContent = '🔐 Sessione verificata'
+    el('verify-status').textContent = 'Sessione verificata'
   } else if (m.t === 'verify_err') {
-    el('verify-status').textContent = '⚠️ Verifica fallita — rifai login con la security key'
+    el('verify-status').textContent = 'Verifica fallita — rifai login con la security key'
   }
 }
 
 function openBridge() {
-  if (ws) { ws.onclose = null; ws.onerror = null; ws.close() }  // niente handler fantasma dal socket vecchio
+  if (ws) { ws.onclose = null; ws.onerror = null; ws.close() }
   ws = new WebSocket(BRIDGE_URL)
   ws.onmessage = ev => handleWsMsg(JSON.parse(ev.data))
   ws.onerror = () => {
@@ -239,8 +298,7 @@ function openBridge() {
     loginErr('Bridge non raggiungibile')
     show('login')
   }
-  // il WebView può buttare giù il WS in background: riaggancia da solo
-  ws.onclose = () => { setTimeout(openBridge, 3000) }
+  ws.onclose = () => { stopDots(); setTimeout(openBridge, 3000) }
 }
 
 function wsSend(obj: any) {
@@ -255,7 +313,7 @@ function tryAutoLogin() {
   openBridge()
   autoT = setTimeout(() => {
     autoT = null
-    show('login')   // nessun login_ok dal bridge → serve accesso manuale
+    show('login')
   }, 15000)
   try {
     const saved = JSON.parse(localStorage.getItem(LS_KEY) ?? '{}')
@@ -267,7 +325,7 @@ function tryAutoLogin() {
 // ── login form ────────────────────────────────────────────────────────────────
 
 el('login-btn').addEventListener('click', () => {
-  if (autoT) { clearTimeout(autoT); autoT = null }   // il timer auto-login non deve strappare la seckey
+  if (autoT) { clearTimeout(autoT); autoT = null }
   loginErr('')
   const hs  = normalizeHS(el<HTMLInputElement>('homeserver').value)
   const usr = el<HTMLInputElement>('username').value.trim()
@@ -284,7 +342,7 @@ function finalize(key?: string) {
   if (!pendingLogin) return
   const vb = el<HTMLButtonElement>('verify-btn'), sb = el<HTMLButtonElement>('skip-btn')
   vb.disabled = sb.disabled = true
-  vb.textContent = 'Accesso…'
+  vb.textContent = 'Accesso...'
   wsSend({
     t: 'login',
     homeserver: pendingLogin.homeserver,

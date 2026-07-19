@@ -122,7 +122,9 @@ export async function waitForEvenAppBridge(): Promise<any> {
     if (t && (window as any).__eveng2?.sendText) { (window as any).__eveng2.sendText(t); input.value = '' }
   }
   root.appendChild(form)
-  document.body.innerHTML = ''
+  // NON svuotare il body: main.ts tocca i nodi del phone UI (#verify-btn, #conn-user…)
+  // sui messaggi login_* del bridge → rimuoverli fa crashare handleWsMsg. Nascondili.
+  for (const c of Array.from(document.body.children)) (c as HTMLElement).style.display = 'none'
   document.body.appendChild(root)
 
   const setText = (el: HTMLDivElement, _cid: number, text: string) => {
@@ -143,9 +145,9 @@ export async function waitForEvenAppBridge(): Promise<any> {
     el.style.width = `${p.width ?? HUD_W}px`
     el.style.height = `${p.height ?? HUD_H}px`
     el.style.padding = `${p.paddingLength ?? 0}px`
-    // font agganciato alla griglia del bridge: HUD_W=30 char per riga (bridge.py) devono
+    // font agganciato alla griglia dell'app: COLS=44 char per riga (main.ts) devono
     // riempire la larghezza del container → vedi ESATTAMENTE dove wrappa e quante righe entrano
-    const charW = ((p.width ?? HUD_W) - 2 * (p.paddingLength ?? 0)) / 30
+    const charW = ((p.width ?? HUD_W) - 2 * (p.paddingLength ?? 0)) / 44
     el.style.fontSize = (p.height ?? HUD_H) < 100 ? '14px' : `${Math.floor(charW / 0.602)}px`
     if (p.borderWidth) el.classList.add('notif')
     setText(el, p.containerID, p.content ?? '')

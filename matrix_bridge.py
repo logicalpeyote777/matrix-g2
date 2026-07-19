@@ -2,20 +2,24 @@
 """matrix_bridge.py — Matrix client per Even G2.
 
 HUD state machine:
-  ROOMS   → swipe=cursore · tap=apri · 2x=HUD off
+  ROOMS   → swipe=cursore · tap=apri · 2x=HUD off       (resa: session picker TM)
   CHAT    → swipe=scorri msg · tap=avvia mic · 2x=torna lista
-  REC     → tap=stop → PROC (start/stop registrazione solo a tap)
-  PROC     → whisper trascrive → CONFIRM (testo rivelato a typewriter)
-  CONFIRM → swipe=scorri testo · tap=invia · 2x=scarta
+  REC     → tap=stop → PROC   (chat visibile + live caption del parziale STT in basso,
+                               status in riga 9; parziali ogni ~2.5s, skip-if-busy)
+  PROC    → whisper trascrive → CONFIRM   (status in riga 9 + fx="dots" animato dall'app)
+  CONFIRM → swipe=scorri testo · tap=invia · 2x=scarta  (resa: dialog box via campo "dialog")
   OFF     → tap=torna ROOMS
 
 WS protocol
   App→Bridge: PCM bytes | {"t":"login",...} | {"t":"logout"} | {"t":"gesture","g":"..."}
   Bridge→App: {"t":"login_ok"} | {"t":"login_error"} | {"t":"logged_out"}
                {"t":"verify_ok"} | {"t":"verify_err"}
-               {"t":"hud","text":"..."} | {"t":"notif","text":"..."} | {"t":"mic_start"} | {"t":"mic_stop"}
+               {"t":"hud","title":"...","lines":[...],"footer":"...",
+                "fx":"type"|"dots",                       # opzionale
+                "dialog":{"text":[...],"opts":[...]}}      # opzionale, solo CONFIRM
+               {"t":"notif","text":"..."} | {"t":"mic_start"} | {"t":"mic_stop"}
 """
-import asyncio, base64, hashlib, hmac, io, json, os, struct, textwrap, time, uuid, wave
+import asyncio, base64, hashlib, hmac, io, json, os, struct, textwrap, time, unicodedata, uuid, wave
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -27,15 +31,18 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 
 HOST, PORT  = "0.0.0.0", 8792
-# HUD: area di contenuto tra la barra superiore e inferiore (niente bordi laterali).
-# Griglia 44×9 (fissa, sta dentro il display). Il testo si rimpicciolisce scalando il
-# CONTAINER nell'app (font ∝ larghezza container), non aggiungendo righe. Deve
-# combaciare con IW/IH nell'app. Frame ASCII (i box-drawing Unicode sono più larghi).
-W           = 44      # colonne di contenuto (= larghezza barre)
-H           = 7       # righe di contenuto (tra le due barre)
+# HUD: container unico 576×288 border 3, griglia testo 44×9 (font FISSO firmware).
+# Il bridge riempie le righe 1..7 (contenuto, W=44); l'app disegna il chrome:
+# riga 8 = separatore 44×"-", riga 9 = status line "title ... footer" (right-aligned)
+# coi testi title/footer del payload. Solo ASCII in posizioni allineate; "●" ammesso
+# SOLO a inizio riga 9 (title). Niente "…" U+2026: ellissi sempre "..." ASCII.
+W           = 44      # caratteri per riga di contenuto
+H           = 7       # righe di contenuto visibili (riga 8-9 = chrome dell'app)
 WHISPER_MODEL = os.environ.get("BRIDGE_WHISPER_MODEL", "medium")  # STT: medium (bilanciato)
 _BPS        = 16000 * 2
 REC_MAX_SEC = 120.0   # tetto di sicurezza: stop registrazione (start/stop è a tap)
+LIVE_WIN_SEC  = 2.5   # live caption: finestra minima tra due trascrizioni parziali
+LIVE_TAIL_SEC = 20.0  # live caption: trascrive solo la coda (sul totale >30s è lento)
 SCROLL_DEB  = 0.35   # seconds between scroll events
 _BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 CREDS_FILE  = os.environ.get("BRIDGE_CREDS_FILE", os.path.join(_BASE_DIR, "matrix_creds.json"))
@@ -67,6 +74,8 @@ _last_scroll_t:   float = 0.0   # debounce timestamp
 _capturing:       bool  = False
 _stt_busy:        bool  = False
 _pcm:             bytearray = bytearray()
+_live_text:       str   = ""     # parziale STT mostrato in REC (live caption)
+_live_gen:        int   = 0      # generazione REC: scarta parziali in volo dopo lo stop
 _matrix           = None
 _sync_task        = None
 _rooms:           dict  = {}
@@ -78,18 +87,30 @@ _new_in_cur:      bool  = False  # ultimo _ingest ha portato un msg nuovo nella 
 
 
 # ── STT (local only) ──────────────────────────────────────────────────────────
-def stt(pcm: bytes) -> str:
+def _load_model():
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
         _whisper_model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8",
                                       cpu_threads=min(8, os.cpu_count() or 4))
+    return _whisper_model
+
+def stt(pcm: bytes) -> str:
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-    segs, _ = _whisper_model.transcribe(
+    segs, _ = _load_model().transcribe(
         audio, language="it", beam_size=5,
         vad_filter=True,                    # scarta il silenzio → meno allucinazioni
         condition_on_previous_text=False,   # niente drift dal contesto precedente
         initial_prompt="Messaggio vocale in italiano, con punteggiatura.")
+    return " ".join(s.text for s in segs).strip()
+
+def _stt_partial(pcm: bytes) -> str:
+    """STT del parziale per il live caption: greedy (beam 1), niente contesto.
+    Non e' la finale: basta che si legga mentre si detta."""
+    audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    segs, _ = _load_model().transcribe(
+        audio, language="it", beam_size=1,
+        vad_filter=True, condition_on_previous_text=False)
     return " ".join(s.text for s in segs).strip()
 
 
@@ -128,75 +149,133 @@ def _sender(client, room_id: str, uid: str) -> str:
 
 
 # ── HUD renders ───────────────────────────────────────────────────────────────
-# Il bridge manda contenuto STRUTTURATO (title, lines, footer); il frame terminale
-# cyberpunk (bordo box-drawing) e l'effetto typewriter li disegna l'app, così il
-# bordo resta sempre integro anche durante l'animazione.
-HUD_TITLE = "MATRIX//G2"
+# Stile Terminal Mode: ogni render ritorna un dict {"lines","title","footer"}
+# (+ "dialog" solo in CONFIRM). lines = contenuto righe 1..7; title/footer vanno
+# nella status line (riga 9) disegnata dall'app.
+# Grammatica prefissi (colonna 1-2 fissa, testo da col 3, hanging indent 2):
+#   "/ " nostro · "? " unread · "> " cursore · ". " voce letta · "  " arrivo/wrap
 
-def _t(s: str, n: int) -> str: return s if len(s) <= n else s[:n-1] + "…"
+def _t(s: str, n: int) -> str: return s if len(s) <= n else s[:n]   # taglio secco, no ellissi
+
+def _ascii(s: str) -> str:
+    """Font firmware: accenti → vocale piatta, resto non-ASCII scartato."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+
+def _live_caption_rows() -> list:
+    """Parziale live in REC: ultime 1-2 righe wrappate a W-2, prefisso '> '
+    sulla prima e hanging indent 2 sulla seconda. Sempre <= 44 char."""
+    if not _live_text: return []
+    wrapped = textwrap.wrap(_ascii(_live_text), W - 2)
+    if not wrapped: return []
+    rows = wrapped[-2:]
+    return ["> " + rows[0]] + ["  " + l for l in rows[1:]]
 
 def _chat_lines(rs) -> list:
     out = []
-    for sender, body, *_ in rs.messages:
-        out.extend(textwrap.wrap(f"{sender}: {body}", W) or [""])
+    for m in rs.messages:
+        sender, body = m[0], m[1]
+        mine = bool(m[3]) if len(m) > 3 else False
+        wrapped = textwrap.wrap(body if mine else f"{sender}: {body}", W - 2) or [""]
+        out.append(("/ " if mine else "  ") + wrapped[0])
+        out.extend("  " + l for l in wrapped[1:])
     return out
+
+def _chat_window() -> list:
+    rs = _cur()
+    return _chat_lines(rs)[_msg_scroll: _msg_scroll + H] if rs else []
 
 def _render_rooms():
     order = _sorted_rooms()
     if not order:
-        return HUD_TITLE, ["", "  > nessuna chat", ""], "TAP=RELOAD"
+        return {"lines": ["", "  . no chats"],
+                "title": "/ Select chat", "footer": "[Tap to open]"}
     cur = _room_idx()
     rows = []
     for i, rid in enumerate(order):
         rs  = _rooms[rid]
-        unr = f" {rs.unread}*" if rs.unread else ""
-        mark = "> " if i == cur else "  "
-        rows.append(f"{mark}{_t(rs.name, W-2-len(unr))}{unr}")
+        unr = str(rs.unread) if rs.unread else ""
+        if i == cur:
+            # box su 1 riga, 44 char esatti: "[ ? nome ....... n ]" (unread → col 42)
+            mark  = "?" if rs.unread else " "
+            inner = W - 6                                  # col 5..42
+            name  = _t(rs.name, inner - len(unr) - 1 if unr else inner)
+            pad   = inner - len(name) - len(unr)
+            rows.append(f"[ {mark} {name}{' ' * pad}{unr} ]")
+        else:
+            mark = "?" if rs.unread else "."
+            if unr:                                        # unread termina a col 42
+                name = _t(rs.name, W - 7 - len(unr))
+                rows.append(f"  {mark} {name}{' ' * (W - 6 - len(name) - len(unr))}{unr}")
+            else:
+                rows.append(f"  {mark} {_t(rs.name, W - 4)}")
     sc = max(0, min(_room_scroll, cur, len(rows) - H))
-    return HUD_TITLE, rows[sc: sc + H], "^v SEL  TAP:OPEN  2x:OFF"
+    return {"lines": rows[sc: sc + H],
+            "title": "/ Select chat", "footer": "[Tap to open]"}
 
 def _render_chat(rs):
-    body = _chat_lines(rs)[_msg_scroll: _msg_scroll + H]
-    return f"#{_t(rs.name, W-2)}", body, "^v SCROLL  TAP:MIC  2x:BACK"
+    # niente header in alto: il nome stanza vive nella status line (riga 9)
+    return {"lines": _chat_lines(rs)[_msg_scroll: _msg_scroll + H],
+            "title": "/ #" + _t(rs.name, 27), "footer": "[Tap to talk]"}
 
 def _render_rec():
-    rs = _cur(); title = f"#{_t(rs.name, W-2)}" if rs else HUD_TITLE
-    body = ["", "", "        ● REC   ascolto…", "", ""]
-    return title, body, "TAP:STOP"
+    # REC: chat visibile sopra, live caption (parziale STT) ancorato in fondo
+    cap = _live_caption_rows()
+    if not cap:
+        return {"lines": _chat_window(),
+                "title": "● Listening...", "footer": "[Tap to finish]"}
+    room = H - len(cap)
+    chat = _chat_window()[-room:]            # tiene i msg piu' recenti della finestra
+    chat += [""] * (room - len(chat))        # caption sempre nelle righe basse
+    return {"lines": chat + cap,
+            "title": "● Listening...", "footer": "[Tap to finish]"}
 
 def _render_proc():
-    rs = _cur(); title = f"#{_t(rs.name, W-2)}" if rs else HUD_TITLE
-    body = ["", "", "     ● ● ●   trascrivo…", "", ""]
-    return title, body, "attendi…"
+    # PROC idem; i pallini li anima l'app in locale (fx="dots" sul frame d'ingresso)
+    return {"lines": _chat_window(),
+            "title": ".   Transcribing...", "footer": ""}
+
+def _dialog_lines() -> list:
+    """Testo dettato wrappato per il dialog box (36 char utili)."""
+    return textwrap.wrap(_pending_text, 36) or [""]
 
 def _confirm_lines() -> list:
+    """Render legacy del CONFIRM: fallback per app senza supporto 'dialog'."""
     return textwrap.wrap(f"> {_pending_text}", W) or [""]
 
 def _render_confirm():
-    rs = _cur(); title = f"#{_t(rs.name, W-2)}" if rs else HUD_TITLE
-    body = _confirm_lines()[_confirm_scroll: _confirm_scroll + H]
-    return title, body, "TAP:INVIA  2x:SCARTA  ^v:SCORRI"
+    rs = _cur()
+    header = f"#{_t(rs.name, W - 1)}" if rs else ""
+    body   = _confirm_lines()[_confirm_scroll: _confirm_scroll + H - 1]
+    text   = _dialog_lines()[_confirm_scroll: _confirm_scroll + 2]
+    while len(text) < 2: text.append("")     # sempre 2 righe (la 2a vuota se corto)
+    return {"lines": [header] + body,        # legacy: app vecchia mostra questo
+            "title": "/ Confirm", "footer": "[Tap send 2tap cancel]",
+            "dialog": {"text": text, "opts": ["Send", "Cancel"]}}
 
 def _broadcast(msg: dict):
     for q in _clients: q.put_nowait(msg)
 
-def _hud_payload():
+def _hud_payload() -> dict:
     if   _state == S.ROOMS:   return _render_rooms()
     elif _state == S.CHAT:
         rs = _cur();          return _render_chat(rs) if rs else _render_rooms()
     elif _state == S.REC:     return _render_rec()
     elif _state == S.PROC:    return _render_proc()
     elif _state == S.CONFIRM: return _render_confirm()
-    return "", [], ""   # OFF → HUD spento
+    return {"lines": [], "title": "", "footer": ""}   # OFF → l'app spegne l'HUD
 
 def _push_hud(fx=None):
-    title, lines, footer = _hud_payload()
-    msg = {"t": "hud", "title": title, "lines": lines, "footer": footer}
+    # in PROC ogni re-push (es. sync arrivato durante la trascrizione) deve portare
+    # fx="dots": l'app ferma l'animazione a OGNI payload e la riavvia solo con fx
+    if fx is None and _state == S.PROC: fx = "dots"
+    p = _hud_payload()
+    msg = {"t": "hud", "title": p["title"], "lines": p["lines"], "footer": p["footer"]}
+    if "dialog" in p: msg["dialog"] = p["dialog"]
     if fx: msg["fx"] = fx
     _broadcast(msg)
 
-def _hud_text(*lines, title=HUD_TITLE, footer=""):
-    """Messaggio HUD 'di sistema' (boot / errori), sempre incorniciato dall'app."""
+def _hud_text(*lines, title="", footer=""):
+    """Frame HUD 'di sistema' (boot / errori)."""
     _broadcast({"t": "hud", "title": title, "lines": list(lines), "footer": footer})
 
 
@@ -229,7 +308,8 @@ def _ingest(client, resp, first: bool) -> bool:
                     body = "[cifrato]"; enc_ev = ev
             else:
                 continue
-            rs.messages.append([_sender(client, room_id, ev.sender), body, enc_ev])
+            rs.messages.append([_sender(client, room_id, ev.sender), body, enc_ev,
+                                ev.sender == own])
             changed = True
             if enc_ev is not None:   # chiave mancante → prova a recuperarla dal backup
                 asyncio.create_task(_resolve_encrypted())
@@ -264,7 +344,8 @@ async def _backfill(rs) -> None:
                 else: body = "[cifrato]"; enc = ev
             except Exception: body = "[cifrato]"; enc = ev
         if body is None: continue
-        out.append([_sender(_matrix, rs.room_id, ev.sender), body, enc])
+        out.append([_sender(_matrix, rs.room_id, ev.sender), body, enc,
+                    ev.sender == _matrix.user_id])
     if out:
         out.reverse()
         rs.messages = deque(out, maxlen=40)
@@ -295,7 +376,7 @@ async def _e2ee_maintenance(client) -> None:
     except Exception as e: print("e2ee maint err:", e)
 
 async def _sync_loop(client) -> None:
-    _hud_text("", "  > sync in corso…", footer="LINK")
+    _hud_text("  syncing...", title="- Link")
     resp = await client.sync(timeout=30000, full_state=True, sync_filter=SYNC_FILTER)
     if isinstance(resp, nio.SyncError):
         print("sync init err:", resp)
@@ -333,7 +414,7 @@ async def _drop_session():
     try: os.unlink(CREDS_FILE)
     except OSError: pass
     _broadcast({"t": "login_error", "msg": "Sessione scaduta, accedi di nuovo"})
-    _hud_text("  > sessione scaduta", "", "  configura sul telefono", footer="OFFLINE")
+    _hud_text("  session expired", title="! Offline", footer="[Reopen app]")
 
 
 # ── Security key / backup import ─────────────────────────────────────────────
@@ -691,7 +772,7 @@ async def _do_login_inner(homeserver: str, user: str, password: str,
         await client.close()
         err_msg = getattr(resp, "message", str(resp))
         _broadcast({"t": "login_error", "msg": err_msg})
-        _hud_text("  > login fallito", _t(err_msg, W), "", "  configura sul telefono", footer="ERR")
+        _hud_text("  login failed", title="! Error")
         return
 
     if client.should_upload_keys:
@@ -728,12 +809,37 @@ async def _do_logout():
 
 
 # ── STT → CONFIRM ─────────────────────────────────────────────────────────────
+async def _live_caption_loop():
+    """Live caption durante REC: ogni ~LIVE_WIN_SEC trascrive l'accumulato e pusha
+    il parziale sull'HUD. Skip-if-busy sul flag _stt_busy: se whisper e' occupato
+    la finestra salta → la cadenza si dirada da sola col carico. Per non pagare
+    il totale a dettature lunghe trascrive solo la coda (LIVE_TAIL_SEC): il caption
+    mostra comunque solo le ultime 1-2 righe. Allo stop il loop muore da solo e un
+    parziale in volo viene ignorato (_live_gen): la finale non viene mai toccata."""
+    global _stt_busy, _live_text
+    gen  = _live_gen
+    loop = asyncio.get_running_loop()
+    while _capturing and _state == S.REC and gen == _live_gen:
+        await asyncio.sleep(LIVE_WIN_SEC)
+        if not (_capturing and _state == S.REC and gen == _live_gen): break
+        if _stt_busy or not _pcm: continue      # skip-if-busy: si riprova alla prossima
+        tail = bytes(_pcm[-int(LIVE_TAIL_SEC * _BPS):])
+        _stt_busy = True
+        try: text = await loop.run_in_executor(None, _stt_partial, tail)
+        except Exception as e: print("live stt err:", e); continue   # silenzioso
+        finally: _stt_busy = False
+        if not (_capturing and _state == S.REC and gen == _live_gen): break
+        if text and text != _live_text:
+            _live_text = text
+            _push_hud()                         # max 1 push per finestra
+
 def _stop_recording():
-    """Stop registrazione → mostra subito 'trascrivo…' e avvia la STT in un task."""
+    """Stop registrazione → 'Transcribing...' in riga 9 e avvia la STT in un task."""
     global _capturing, _state
     _capturing = False
     _broadcast({"t": "mic_stop"})
-    _state = S.PROC; _push_hud()   # feedback immediato: non resta su REC
+    # fx="dots" SOLO sul frame di ingresso in PROC: l'app anima i pallini in locale
+    _state = S.PROC; _push_hud(fx="dots")   # feedback immediato: non resta su REC
     asyncio.create_task(_finish_audio())
 
 async def _finish_audio():
@@ -758,7 +864,7 @@ async def _finish_audio():
 # ── Gesture dispatcher ────────────────────────────────────────────────────────
 async def _on_gesture(g: str):
     global _state, _current_room_id, _room_scroll, _msg_scroll, _pending_text
-    global _capturing, _pcm, _confirm_scroll, _last_scroll_t
+    global _capturing, _pcm, _confirm_scroll, _last_scroll_t, _live_text, _live_gen
 
     order = _sorted_rooms(); n = len(order)
 
@@ -806,18 +912,21 @@ async def _on_gesture(g: str):
             _push_hud()
         elif g == "tap":
             _pcm = bytearray(); _capturing = True
+            _live_text = ""; _live_gen += 1     # invalida eventuali parziali vecchi
             _state = S.REC; _push_hud(); _broadcast({"t": "mic_start"})
+            asyncio.create_task(_live_caption_loop())
 
     elif _state == S.REC:
         if g == "tap" and _capturing:
-            _stop_recording()   # → PROC ('trascrivo…') poi CONFIRM
+            _stop_recording()   # → PROC ('Transcribing...') poi CONFIRM
 
     elif _state == S.CONFIRM:
         # tap partiti mentre girava la STT (stato ancora REC sull'HUD) arrivano qui
         # accodati: senza gate invierebbero un testo mai visto
         if time.monotonic() - _confirm_t < 0.7: return
         if g in ("swipe_up", "swipe_down"):            # scorri il testo trascritto
-            cap = max(0, len(_confirm_lines()) - H)
+            # finestra dialog = 2 righe wrappate a 36 (dialog.text del payload)
+            cap = max(0, len(_dialog_lines()) - 2)
             _confirm_scroll = max(0, _confirm_scroll - 1) if g == "swipe_up" \
                               else min(_confirm_scroll + 1, cap)
             _push_hud()
@@ -849,7 +958,7 @@ async def handler(ws):
     elif os.path.exists(CREDS_FILE):
         try:
             c = json.loads(open(CREDS_FILE).read())
-            _hud_text("", "  > connessione…", footer="LINK")
+            _hud_text("  connecting...", title="- Link")
             if c.get("access_token") and c.get("device_id"):
                 asyncio.create_task(_do_login(
                     c["homeserver"], c["user"],

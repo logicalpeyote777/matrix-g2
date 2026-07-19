@@ -3,163 +3,303 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Matrix G2</title>
+  <title>MATRIX//G2</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg: #0d1117; --surface: #161b22; --border: #30363d;
-      --accent: #1f6feb; --accent-h: #388bfd;
-      --text: #e6edf3; --dim: #8b949e;
-      --err: #f85149; --green: #3fb950;
+      --bg: #F2F2F7;        /* fondo pagina iOS */
+      --surface: #FFFFFF;   /* card */
+      --text: #111113;      /* titoli/valori */
+      --dim: #8E8E93;       /* secondari, label, footer hint */
+      --border: #E5E5EA;    /* hairline separatori */
+      --green: #34C759;     /* stato Online/attivo */
+      --idle: #A9B33A;      /* stato intermedio (Verifying...) */
+      --err: #FF3B30;
+      --accent: #F5EE9E;    /* giallo brand Even, solo highlight */
+      --hud-green: #50E858; /* SOLO chip preview-HUD */
+      --hud-bg: #212121;    /* SOLO chip preview-HUD */
+      --mono: ui-monospace, "SF Mono", Menlo, monospace;   /* solo URL/room id/gesti */
+      --sans: -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
     }
-    html, body { height: 100%; background: var(--bg); color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      -webkit-font-smoothing: antialiased; }
 
-    .screen { display: flex; flex-direction: column; min-height: 100dvh; padding: 0 20px 40px; }
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 17px;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .screen {
+      display: flex;
+      flex-direction: column;
+      min-height: 100dvh;
+      padding: 0 16px 24px;
+      max-width: 480px;
+      margin: 0 auto;
+    }
     .hidden { display: none !important; }
 
-    /* brand */
-    .brand { text-align: center; padding: 36px 0 24px; }
-    .brand-icon { width: 60px; height: 60px;
-      background: linear-gradient(135deg, var(--accent) 0%, #7c3aed 100%);
-      border-radius: 16px; display: inline-flex; align-items: center;
-      justify-content: center; font-size: 30px; margin-bottom: 12px; }
-    .brand h1 { font-size: 24px; font-weight: 700; letter-spacing: -.5px; }
-    .brand p  { color: var(--dim); font-size: 13px; margin-top: 4px; }
+    /* ── nav bar iOS ── */
+    .nav {
+      display: grid;
+      grid-template-columns: 44px 1fr 44px;
+      align-items: center;
+      height: 52px;
+      margin: 0 -16px 8px;
+      padding: 0 8px;
+    }
+    .nav-back {
+      color: var(--dim);
+      font-size: 28px;
+      line-height: 1;
+      text-align: left;
+      padding-left: 4px;
+    }
+    .nav-title {
+      text-align: center;
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--text);
+    }
 
-    /* card */
-    .card { background: var(--surface); border: 1px solid var(--border);
-      border-radius: 14px; padding: 20px; margin-bottom: 14px; }
-    .card-title { font-size: 11px; font-weight: 600; letter-spacing: 1px;
-      text-transform: uppercase; color: var(--dim); margin-bottom: 16px; }
+    /* ── chip brand (unico elemento "HUD" della pagina) ── */
+    .brand-chip {
+      align-self: center;
+      background: var(--hud-bg);
+      color: var(--hud-green);
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 1px;
+      padding: 6px 14px;
+      border-radius: 8px;
+      margin: 4px 0 20px;
+    }
 
-    /* fields */
-    .field { margin-bottom: 12px; }
-    .field:last-child { margin-bottom: 0; }
-    .field label { display: block; font-size: 12px; font-weight: 500;
-      color: var(--dim); margin-bottom: 6px; }
-    .field input { width: 100%; background: var(--bg); border: 1px solid var(--border);
-      border-radius: 9px; padding: 12px 14px; font-size: 15px; color: var(--text);
-      outline: none; transition: border-color .15s, box-shadow .15s; }
-    .field input:focus { border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(31,111,235,.15); }
-    .field input::placeholder { color: var(--dim); opacity: .45; }
+    /* ── card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .row {
+      padding: 10px 16px 12px;
+    }
+    .row + .row { border-top: 1px solid var(--border); }
+    .row label {
+      display: block;
+      font-size: 13px;
+      color: var(--dim);
+      margin-bottom: 2px;
+    }
+    .row input {
+      width: 100%;
+      border: none;
+      outline: none;
+      background: transparent;
+      font-family: var(--sans);
+      font-size: 17px;
+      color: var(--text);
+      caret-color: var(--text);
+      padding: 2px 0;
+    }
+    .row input::placeholder { color: var(--dim); opacity: .6; }
+    .row input.mono { font-family: var(--mono); font-size: 15px; }
 
-    /* buttons */
-    .btn-primary { display: block; width: 100%; padding: 14px;
-      background: var(--accent); color: #fff; border: none; border-radius: 10px;
-      font-size: 16px; font-weight: 600; cursor: pointer;
-      transition: background .15s, opacity .15s; margin-bottom: 10px; }
-    .btn-primary:hover { background: var(--accent-h); }
-    .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+    /* ── hint sopra card ── */
+    .hint {
+      font-size: 13px;
+      color: var(--dim);
+      padding: 0 4px;
+      margin-bottom: 10px;
+    }
 
-    .btn-ghost { display: block; width: 100%; padding: 12px;
-      background: transparent; border: 1px solid var(--border); border-radius: 10px;
-      font-size: 14px; color: var(--dim); cursor: pointer;
-      transition: border-color .15s, color .15s; }
-    .btn-ghost:hover { border-color: var(--dim); color: var(--text); }
+    /* ── bottoni ── */
+    .btn-primary {
+      display: block;
+      width: 100%;
+      padding: 15px;
+      background: var(--text);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      font-family: var(--sans);
+      font-size: 17px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 12px;
+    }
+    .btn-primary:active { opacity: .8; }
+    .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
 
-    .btn-outline { background: transparent; border: 1px solid var(--border);
-      color: var(--dim); font-size: 13px; padding: 9px 24px; border-radius: 8px;
-      cursor: pointer; margin-top: 8px; transition: border-color .15s, color .15s; }
-    .btn-outline:hover { border-color: var(--err); color: var(--err); }
+    .btn-text {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      background: none;
+      border: none;
+      font-family: var(--sans);
+      font-size: 17px;
+      color: var(--dim);
+      text-align: center;
+      cursor: pointer;
+    }
+    .btn-text:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-text.danger { color: var(--err); }
 
-    /* error */
-    .err-msg { font-size: 13px; color: var(--err); min-height: 18px;
-      padding: 4px 0; text-align: center; }
+    /* ── errore ── */
+    .err-msg {
+      font-size: 13px;
+      color: var(--err);
+      padding: 2px 4px;
+      min-height: 18px;
+    }
 
-    /* seckey hint */
-    .hint { background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 14px; margin-bottom: 14px;
-      font-size: 13px; color: var(--dim); line-height: 1.5; }
-    .hint strong { color: var(--text); }
+    /* ── footer ── */
+    .foot {
+      margin-top: auto;
+      padding-top: 24px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--dim);
+    }
 
-    /* connected */
-    #connected { align-items: center; justify-content: center; text-align: center; gap: 14px; }
-    .conn-icon { width: 76px; height: 76px;
-      background: linear-gradient(135deg, #0d2d1a 0%, #0d1f30 100%);
-      border: 2px solid var(--green); border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 36px; margin-bottom: 6px; }
-    .conn-status { font-size: 18px; font-weight: 700; color: var(--green); }
-    .conn-user { font-family: 'SF Mono','Fira Code',monospace; font-size: 13px;
-      color: var(--dim); background: var(--surface); border: 1px solid var(--border);
-      border-radius: 8px; padding: 5px 14px; }
-    .conn-hints { margin-top: 6px; background: var(--surface);
-      border: 1px solid var(--border); border-radius: 12px;
-      padding: 14px 18px; width: 100%; max-width: 300px; }
-    .conn-hints table { width: 100%; border-collapse: collapse; }
-    .conn-hints td { padding: 4px 0; font-size: 13px; }
-    .conn-hints td:first-child { color: var(--dim); width: 100px; font-size: 12px; }
+    /* ── connected (clone pagina Host) ── */
+    .acct-name {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--text);
+      word-break: break-all;
+    }
+    .acct-sub {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--dim);
+      margin-top: 2px;
+    }
+    .acct-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 15px;
+      color: var(--text);
+    }
+    .badge-online { color: var(--green); font-weight: 600; font-size: 15px; }
+    #verify-status { font-size: 13px; color: var(--idle); min-height: 18px; margin-top: 2px; }
+
+    .section-hdr {
+      font-size: 13px;
+      color: var(--dim);
+      padding: 0 4px;
+      margin-bottom: 6px;
+    }
+    .gest-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .gest-chip {
+      flex: none;
+      font-family: var(--mono);
+      font-size: 12px;
+      background: var(--hud-bg);
+      color: #fff;
+      border-radius: 6px;
+      padding: 3px 10px;
+    }
+    .gest-desc {
+      font-size: 15px;
+      color: var(--dim);
+      text-align: right;
+    }
   </style>
 </head>
 <body>
 
 <!-- ── 1. Login ── -->
 <div id="login" class="screen">
-  <div class="brand">
-    <div class="brand-icon">⬡</div>
-    <h1>Matrix G2</h1>
-    <p>glasses HUD client</p>
+  <div class="nav">
+    <div class="nav-back">&#8249;</div>
+    <div class="nav-title">Matrix G2</div>
+    <div></div>
   </div>
+  <div class="brand-chip">&gt; MATRIX//G2_</div>
   <div class="card">
-    <div class="card-title">Accedi</div>
-    <div class="field">
-      <label>Server</label>
-      <input type="url" id="homeserver" placeholder="https://matrix.org" autocomplete="off" inputmode="url"/>
+    <div class="row">
+      <label>Homeserver</label>
+      <input type="url" id="homeserver" class="mono" placeholder="https://matrix.org" autocomplete="off" inputmode="url"/>
     </div>
-    <div class="field">
+    <div class="row">
       <label>Username</label>
       <input type="text" id="username" placeholder="kevin" autocomplete="off"/>
     </div>
-    <div class="field">
+    <div class="row">
       <label>Password</label>
       <input type="password" id="password" autocomplete="current-password"/>
     </div>
   </div>
-  <button class="btn-primary" id="login-btn">Accedi →</button>
+  <button class="btn-primary" id="login-btn">Accedi</button>
   <div class="err-msg hidden" id="login-err"></div>
+  <div class="foot">Sign in to connect your glasses</div>
 </div>
 
 <!-- ── 2. Security key ── -->
 <div id="seckey" class="screen hidden">
-  <div class="brand">
-    <div class="brand-icon">🔑</div>
-    <h1>Security Key</h1>
-    <p>Verifica E2EE</p>
+  <div class="nav">
+    <div class="nav-back">&#8249;</div>
+    <div class="nav-title">Recovery Key</div>
+    <div></div>
   </div>
   <div class="hint">
-    <strong>Facoltativa.</strong> Inserisci la tua Security Key Matrix per abilitare
-    la decryption dei messaggi cifrati precedenti.
-    Puoi saltare e aggiungerla in seguito dal logout → login.
+    Enter your Matrix Security Key to decrypt earlier encrypted messages.
+    You can skip and add it later.
   </div>
   <div class="card">
-    <div class="card-title">Recovery Key</div>
-    <div class="field">
-      <input type="text" id="security-key"
-        placeholder="AbCd EfGh IjKl MnOp QrSt UvWx YzAb CdEf"
+    <div class="row">
+      <label>Recovery Key</label>
+      <input type="text" id="security-key" class="mono"
+        placeholder="AbCd EfGh IjKl MnOp ..."
         autocomplete="off" autocorrect="off" spellcheck="false"/>
     </div>
   </div>
-  <button class="btn-primary" id="verify-btn">Verifica e continua →</button>
-  <button class="btn-ghost" id="skip-btn">Salta per ora</button>
+  <button class="btn-primary" id="verify-btn">Verifica e continua</button>
+  <button class="btn-text" id="skip-btn">Salta per ora</button>
+  <div class="foot">Optional — unlocks message history</div>
 </div>
 
-<!-- ── 3. Connected ── -->
+<!-- ── 3. Connected (clone pagina Host) ── -->
 <div id="connected" class="screen hidden">
-  <div class="conn-icon">⬡</div>
-  <div class="conn-status">Connesso</div>
-  <div class="conn-user" id="conn-user"></div>
-  <div id="verify-status" style="font-size:13px;color:var(--dim);min-height:18px"></div>
-  <div class="conn-hints">
-    <table>
-      <tr><td>Tap</td><td>Rispondi a voce</td></tr>
-      <tr><td>Swipe su/giù</td><td>Cambia stanza</td></tr>
-      <tr><td>Double-tap</td><td>Pagina successiva</td></tr>
-    </table>
+  <div class="nav">
+    <div></div>
+    <div class="nav-title">Matrix G2</div>
+    <div></div>
   </div>
-  <button class="btn-outline" id="logout-btn">Logout</button>
+  <div class="card">
+    <div class="row">
+      <div class="acct-name" id="conn-user"></div>
+      <div class="acct-sub">Matrix &middot; E2EE</div>
+    </div>
+    <div class="row">
+      <div class="acct-row">
+        <span>Status</span>
+        <span class="badge-online">Online</span>
+      </div>
+      <div id="verify-status"></div>
+    </div>
+  </div>
+  <div class="section-hdr">G2 commands</div>
+  <div class="card">
+    <div class="row gest-row"><span class="gest-chip">tap</span><span class="gest-desc">Open chat / dictate reply</span></div>
+    <div class="row gest-row"><span class="gest-chip">swipe</span><span class="gest-desc">Scroll chats and messages</span></div>
+    <div class="row gest-row"><span class="gest-chip">2&#215;tap</span><span class="gest-desc">Back / cancel</span></div>
+  </div>
+  <button class="btn-text danger" id="logout-btn">Logout</button>
+  <div class="foot">Select a chat from your glasses</div>
 </div>
 
 <script type="module" src="/src/main.ts"></script>
