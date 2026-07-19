@@ -7,7 +7,7 @@ HUD state machine:
   REC     → tap=stop → PROC   (chat visibile + live caption del parziale STT in basso,
                                status in riga 9; parziali ogni ~2.5s, skip-if-busy)
   PROC    → whisper trascrive → CONFIRM   (status in riga 9 + fx="dots" animato dall'app)
-  CONFIRM → swipe=scorri testo · tap=invia · 2x=scarta  (resa: dialog box via campo "dialog")
+  CONFIRM → swipe=scorri testo · tap=invia · 2x=scarta  (testo full-width nel frame)
   OFF     → tap=torna ROOMS
 
 WS protocol
@@ -16,7 +16,7 @@ WS protocol
                {"t":"verify_ok"} | {"t":"verify_err"}
                {"t":"hud","title":"...","lines":[...],"footer":"...",
                 "fx":"type"|"dots",                       # opzionale
-                "dialog":{"text":[...],"opts":[...]}}      # opzionale, solo CONFIRM
+                "dialog":{"text":[...],"opts":[...]}}      # opzionale (l'app sa renderlo, oggi inutilizzato)
                {"t":"notif","text":"..."} | {"t":"mic_start"} | {"t":"mic_stop"}
 """
 import asyncio, base64, hashlib, hmac, io, json, os, struct, textwrap, time, unicodedata, uuid, wave
@@ -234,23 +234,17 @@ def _render_proc():
     return {"lines": _chat_window(),
             "title": ".   Transcribing...", "footer": ""}
 
-def _dialog_lines() -> list:
-    """Testo dettato wrappato per il dialog box (36 char utili)."""
-    return textwrap.wrap(_pending_text, 36) or [""]
-
 def _confirm_lines() -> list:
-    """Render legacy del CONFIRM: fallback per app senza supporto 'dialog'."""
     return textwrap.wrap(f"> {_pending_text}", W) or [""]
 
 def _render_confirm():
+    # testo full-width nel frame ("come prima"): il dialog box è stato provato e
+    # scartato — sul device era illeggibile. Niente campo "dialog" nel payload.
     rs = _cur()
     header = f"#{_t(rs.name, W - 1)}" if rs else ""
     body   = _confirm_lines()[_confirm_scroll: _confirm_scroll + H - 1]
-    text   = _dialog_lines()[_confirm_scroll: _confirm_scroll + 2]
-    while len(text) < 2: text.append("")     # sempre 2 righe (la 2a vuota se corto)
-    return {"lines": [header] + body,        # legacy: app vecchia mostra questo
-            "title": "/ Confirm", "footer": "[Tap send 2tap cancel]",
-            "dialog": {"text": text, "opts": ["Send", "Cancel"]}}
+    return {"lines": [header] + body,
+            "title": "/ Confirm", "footer": "[Tap send 2tap cancel]"}
 
 def _broadcast(msg: dict):
     for q in _clients: q.put_nowait(msg)
@@ -288,9 +282,14 @@ def _ingest(client, resp, first: bool) -> bool:
     cur_id = order[_room_idx()] if order else None
     own     = client.user_id
     changed = False
+    # stanze abbandonate (leave da un altro client): fuori dalla lista.
+    # _room_idx() e _cur() gestiscono già la sparizione dell'id corrente.
+    for room_id in getattr(resp.rooms, "leave", {}) or {}:
+        if _rooms.pop(room_id, None) is not None: changed = True
     for room_id, joined in resp.rooms.join.items():
         room = client.rooms.get(room_id)
-        name = (room.display_name or room_id) if room else room_id
+        if room is None: continue        # nio non la considera joined → non listarla
+        name = room.display_name or room_id
         if room_id not in _rooms: _rooms[room_id] = RoomState(room_id=room_id, name=name)
         rs = _rooms[room_id]; rs.name = name
         for ev in joined.timeline.events:
@@ -925,8 +924,8 @@ async def _on_gesture(g: str):
         # accodati: senza gate invierebbero un testo mai visto
         if time.monotonic() - _confirm_t < 0.7: return
         if g in ("swipe_up", "swipe_down"):            # scorri il testo trascritto
-            # finestra dialog = 2 righe wrappate a 36 (dialog.text del payload)
-            cap = max(0, len(_dialog_lines()) - 2)
+            # finestra = H-1 righe full-width (riga 1 = header stanza)
+            cap = max(0, len(_confirm_lines()) - (H - 1))
             _confirm_scroll = max(0, _confirm_scroll - 1) if g == "swipe_up" \
                               else min(_confirm_scroll + 1, cap)
             _push_hud()
