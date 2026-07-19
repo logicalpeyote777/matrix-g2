@@ -10,8 +10,8 @@ HUD state machine:
                                status in riga 9; parziali ogni ~2.5s, skip-if-busy)
   PROC    → whisper trascrive → CONFIRM   (status in riga 9 + fx="dots" animato dall'app)
   CONFIRM → swipe=scorri testo · tap=invia · 2x=scarta  (testo full-width nel frame)
-  OFF     → 2x=riaccende dov'eri (CHAT se spento da lì, sennò ROOMS); altri gesti
-            ignorati, così i tap accidentali non svegliano l'HUD
+  OFF     → tap o 2x=riaccende dov'eri (CHAT se spento da lì, sennò ROOMS);
+            swipe ignorati (sfregamenti accidentali non svegliano l'HUD)
 
 WS protocol
   App→Bridge: PCM bytes | {"t":"login",...} | {"t":"logout"} | {"t":"gesture","g":"..."}
@@ -332,8 +332,11 @@ async def _backfill(rs) -> None:
     Scarica gli ultimi messaggi via /messages quando si apre una chat vuota."""
     if not _matrix or len(rs.messages) >= 10: return
     try:
-        resp = await _matrix.room_messages(rs.room_id, start=_matrix.next_batch,
-                                           direction=nio.MessageDirection.back, limit=24)
+        # timeout stretto: gira DENTRO il gesto tap — un homeserver lento (VPN)
+        # non deve congelare il loop dei gesti
+        resp = await asyncio.wait_for(
+            _matrix.room_messages(rs.room_id, start=_matrix.next_batch,
+                                  direction=nio.MessageDirection.back, limit=24), 6)
     except Exception as e:
         print("backfill err:", e); return
     if not isinstance(resp, nio.RoomMessagesResponse): return
@@ -398,9 +401,12 @@ async def _sync_loop(client) -> None:
         if isinstance(resp, nio.SyncError):
             if resp.status_code == "M_UNKNOWN_TOKEN": await _drop_session(); return
             await asyncio.sleep(5); continue
-        if _ingest(client, resp, first=False):
-            _push_hud(fx="type" if _new_in_cur else None)
-        await _e2ee_maintenance(client)
+        try:      # un ingest/maintenance che esplode non deve uccidere il sync loop
+            if _ingest(client, resp, first=False):
+                _push_hud(fx="type" if _new_in_cur else None)
+            await _e2ee_maintenance(client)
+        except Exception as e:
+            print("ingest err:", type(e).__name__, e)
 
 async def _drop_session():
     """Token invalidato dal server: riprova con la password salvata, o torna al login."""
@@ -875,7 +881,9 @@ async def _on_gesture(g: str):
     order = _sorted_rooms(); n = len(order)
 
     if _state == S.OFF:
-        if g != "double_tap": return    # solo 2x riaccende (no wake accidentali)
+        # tap o 2x riaccendono; gli swipe (sfregamenti accidentali) no. Il tap resta
+        # accettato apposta: se il device perde il double, l'OFF non è una trappola.
+        if g not in ("tap", "double_tap"): return
         rs = _cur()
         if _off_from_chat and rs:       # spento dalla chat → riapri la chat
             rs.unread = 0
@@ -968,11 +976,15 @@ async def handler(ws):
     q: asyncio.Queue = asyncio.Queue(); _clients.add(q)
 
     async def pump():
-        while True: await ws.send(json.dumps(await q.get(), ensure_ascii=False))
+        try:
+            while True: await ws.send(json.dumps(await q.get(), ensure_ascii=False))
+        except Exception:
+            return   # connessione andata: il recv loop chiude e pulisce
 
     pump_task = asyncio.create_task(pump())
     if _matrix:
         q.put_nowait({"t": "login_ok", "user": _matrix.user_id})
+        if _capturing: q.put_nowait({"t": "mic_start"})   # reconnect a metà REC: riaggancia il mic
         _push_hud()
     elif os.path.exists(CREDS_FILE):
         try:
@@ -990,6 +1002,7 @@ async def handler(ws):
     print("G2 connessa")
     try:
         async for msg in ws:
+          try:      # un errore su UN messaggio non deve uccidere il handler (= tap morti)
             if isinstance(msg, (bytes, bytearray)):
                 if _capturing:
                     _pcm.extend(msg)
@@ -1009,6 +1022,9 @@ async def handler(ws):
                 _capturing = False
                 _broadcast({"t": "mic_stop"})
                 asyncio.create_task(_finish_audio())
+          except websockets.ConnectionClosed: raise
+          except Exception as e:
+            print("ws msg err:", type(e).__name__, e)
     except websockets.ConnectionClosed: pass
     finally: _clients.discard(q); pump_task.cancel(); print("G2 disconnessa")
 
